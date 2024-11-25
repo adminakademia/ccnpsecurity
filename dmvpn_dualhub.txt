@@ -1,0 +1,315 @@
+========
+Dual Hub - Single Cloud
+Dual Hub - Dual Cloud
+========
+
+
+============ Wstępna rutera R4 =============
+
+R4:
+
+hostname R4
+
+interface g0/1
+ip address 202.0.202.2 255.255.255.252
+no shutdown
+
+int l0
+ip add 192.168.4.1 255.255.255.0
+no shutdown
+
+int l1
+ip add 172.16.4.1 255.255.255.0
+no shutdown
+
+ip route 0.0.0.0 0.0.0.0 202.0.202.1
+
+
+ 
+DMVPN:
+interface g3/0
+no switchport
+ip address 202.0.202.1 255.255.255.252
+no shutdown
+
+
+
+TEST z R4:
+R4(config)#do ping 192.0.2.1
+R4(config)#do ping 198.51.100.2
+R4(config)#do ping 203.0.113.1
+
+
+============ Konfiguracja R4 jako zwykły spoke w faza3 =============
+
+crypto isakmp policy 99
+ encr aes 256
+ hash sha384
+ authentication pre-share
+ group 14
+crypto isakmp key DMVPN@key# address 0.0.0.0
+
+crypto ipsec transform-set DMVPN_TRANS esp-aes 256 esp-sha384-hmac
+ mode transport
+
+crypto ipsec profile DMVPN_PROFILE
+ set transform-set DMVPN_TRANS
+
+
+interface Tunnel1
+ ip address 100.100.100.4 255.255.255.248
+ ip mtu 1400
+ ip nhrp authentication NHRPauth
+ ip nhrp map 100.100.100.1 192.0.2.1
+ ip nhrp map multicast 192.0.2.1
+ ip nhrp nhs 100.100.100.1
+ ip nhrp network-id 1
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel protection ipsec profile DMVPN_PROFILE
+ 
+
+router eigrp 1
+ network 100.100.100.0 0.0.0.7
+ network 172.16.4.0 0.0.0.255
+ network 192.168.4.0 0.0.0.255
+ eigrp router-id 4.4.4.4
+
+
+TEST:
+R4(config-router)#do traceroute 192.168.2.1
+
+
+
+========
+Dual Hub - Single Cloud
+========
+
+R4 - w sumie tak jak spoke inne
+
+interface Tunnel1
+ ip address 100.100.100.4 255.255.255.248
+ ip mtu 1400
+ ip nhrp authentication NHRPauth
+ ip nhrp map 100.100.100.1 192.0.2.1
+ ip nhrp map multicast 192.0.2.1
+ ip nhrp nhs 100.100.100.1
+ ip nhrp network-id 1
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel protection ipsec profile DMVPN_PROFILE
+
+
+plus na R4:
+int tun1
+no ip split-horizon eigrp 1
+ip next-hop-self eigrp 1
+
+na spoke (R2, R3) dodatkowo:
+int tun1
+ip nhrp map 100.100.100.4 202.0.202.2
+ip nhrp map multicast 202.0.202.2
+ip nhrp nhs 100.100.100.4
+
+
+Na R2/R3:
+do sh dmvpn | begin Peers
+
+Na R4:
+do sh dmvpn | begin Peers
+
+## Type:Hub/Spoke # i są 3 węzły
+
+
+TEST:
+na R1 na g0/1 polecenie shutdown
+
+R1(config)#int g0/1
+R1(config-if)#shut
+
+
+R2(config-router)#do traceroute 192.168.3.1
+R2(config-if)#do sh ip rou
+
+
+
+NAPRAWIAMY:
+
+R1(config-if)#int g0/1
+R1(config-if)#no shut
+
+###
+jak wyleci problem "rec'd IPSEC packet has invalid spi", to:
+
+
+Znaczenie komunikatu jest takie, że jedna strona tunelu IPSEC otrzymała pakiet z nieprawidłowym SPI. SPI (Security Parameter Index) służy do identyfikacji SA (Security Association) pakietu - który zawiera informacje potrzebne do obsługi zaszyfrowanego ruchu. Zazwyczaj ten komunikat wskazuje, że SA peerów nie są zsynchronizowane, co zdarza się czasami, gdy SA się starzeje i jest ponownie ustanawiane.
+###
+
+R4(config-if)#crypto isakmp invalid-spi-recovery
+do clear crypto isakmp
+do clear crypto sa
+
+# Ale powyższe zadziała dla flexvpn, a tutaj zostaje:
+int tun 1
+shut
+no shut
+
+
+
+
+========
+Dual Hub - Dual Cloud
+========
+
+Usuwamy to co było na interfejscach tunnel 1 na wszystkich ruterach:
+
+no int tun1
+
+
+
+====
+
+Dla R1:
+
+interface Tunnel1
+ ip address 100.100.100.1 255.255.255.248
+ ip mtu 1400
+ ip tcp adjust-mss 1360
+ ip nhrp network-id 1
+ ip nhrp map multicast dynamic
+ no ip split-horizon eigrp 1
+ ip nhrp authentication NHRPauth
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel key 1
+ tunnel protection ipsec profile DMVPN_PROFILE
+ ip nhrp redirect
+ no ip split-horizon eigrp 1
+ ip next-hop-self eigrp 1
+
+
+
+Dla R4:
+
+interface Tunnel2
+ ip address 100.100.200.1 255.255.255.248
+ ip mtu 1400
+ ip tcp adjust-mss 1360
+ ip nhrp network-id 2
+ ip nhrp map multicast dynamic
+ no ip split-horizon eigrp 1
+ ip nhrp authentication NHRPauth
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel key 2
+ tunnel protection ipsec profile DMVPN_PROFILE
+ ip nhrp redirect
+ no ip split-horizon eigrp 1
+ ip next-hop-self eigrp 1
+
+router eigrp 1
+ no network 100.100.100.0 0.0.0.7
+ network 100.100.200.0 0.0.0.7
+ 
+==
+
+Dla R2:
+
+interface Tunnel1
+ ip address 100.100.100.2 255.255.255.248
+ ip mtu 1400
+ ip nhrp authentication NHRPauth
+ ip nhrp map 100.100.100.1 192.0.2.1
+ ip nhrp map multicast 192.0.2.1
+ ip nhrp nhs 100.100.100.1
+ ip nhrp network-id 1
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel protection ipsec profile DMVPN_PROFILE
+ tunnel key 1
+
+
+interface Tunnel2
+ ip address 100.100.200.2 255.255.255.248
+ ip mtu 1400
+ ip nhrp authentication NHRPauth
+ ip nhrp map 100.100.200.1 202.0.202.2
+ ip nhrp map multicast 202.0.202.2
+ ip nhrp nhs 100.100.200.1
+ ip nhrp network-id 2
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel protection ipsec profile DMVPN_PROFILE
+ tunnel key 2
+
+router eigrp 1
+ network 100.100.200.0 0.0.0.7
+
+
+==
+
+Dla R3:
+
+interface Tunnel1
+ ip address 100.100.100.3 255.255.255.248
+ ip mtu 1400
+ ip nhrp authentication NHRPauth
+ ip nhrp map 100.100.100.1 192.0.2.1
+ ip nhrp map multicast 192.0.2.1
+ ip nhrp nhs 100.100.100.1
+ ip nhrp network-id 1
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel protection ipsec profile DMVPN_PROFILE shared
+ tunnel key 1
+
+
+interface Tunnel2
+ ip address 100.100.200.3 255.255.255.248
+ ip mtu 1400
+ ip nhrp authentication NHRPauth
+ ip nhrp map 100.100.200.1 202.0.202.2
+ ip nhrp map multicast 202.0.202.2
+ ip nhrp nhs 100.100.200.1
+ ip nhrp network-id 2
+ ip nhrp shortcut
+ ip tcp adjust-mss 1360
+ tunnel source GigabitEthernet0/1
+ tunnel mode gre multipoint
+ tunnel protection ipsec profile DMVPN_PROFILE shared
+ tunnel key 2
+
+router eigrp 1
+ network 100.100.200.0 0.0.0.7
+
+
+## Aby rozwiązać problem z szyfrowaniem IPsec, że na tym samym tunelu..., to:
+
+interface Tunnel1
+  tunnel protection ipsec profile DMVPN_PROFILE shared
+interface Tunnel2
+  tunnel protection ipsec profile DMVPN_PROFILE shared
+
+
+
+==
+TEST:
+
+R1(config)# do sh dmvpn
+R2(config)# do sh dmvpn
+R3(config)# do sh dmvpn
+R4(config)# do sh dmvpn
+
+R2(config)# do traceroute 192.168.3.1
+
+R2(config)# do sh ip route
