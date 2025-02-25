@@ -1,0 +1,78 @@
+!Global Configuration
+!
+radius server ISE1_Radius
+ address ipv4 192.168.74.110 auth-port 1812 acct-port 1813  ! Definiuje serwer RADIUS o adresie 192.168.74.110, z portem uwierzytelniania 1812 i portem księgowania 1813
+ key Cisco123                                           ! Klucz współdzielony używany do szyfrowania komunikacji z serwerem RADIUS
+
+radius server ISE2_Radius
+ address ipv4 192.168.74.111 auth-port 1812 acct-port 1813  ! Definiuje drugi serwer RADIUS jako zapasowy
+ key Cisco123                                           ! Klucz współdzielony dla tego serwera
+
+aaa group server radius ISE-RADIUS-SERVERS
+ server name ISE1_Radius                                   ! Tworzy grupę serwerów RADIUS o nazwie "ISE-RADIUS-SERVERS" i dodaje do niej serwer ISE1_Radius
+ server name ISE2_Radius                                    ! Dodaje do grupy również serwer ISE2_Radius
+
+ip radius source-interface Vlan1                            ! Definiuje interfejs, z którego będą wychodzić połączenia/żądania RADIUS.
+
+aaa authentication dot1x default group ISE-RADIUS-SERVERS      ! Określa grupę serwerów RADIUS jako metodę uwierzytelniania dla protokołu 802.1X
+aaa authorization network default group ISE-RADIUS-SERVERS      ! Zarządza autoryzacjami sieciowymi (tj. Dynamic VLAN, przypisywaniem DACL, itp.) za pośrednictwem serwera RADIUS w przypadku sesji uwierzytelnianych 802.1x.
+aaa accounting update newinfo                           ! Wysyła aktualizacje księgowania przy zmianie informacji o użytkowniku
+aaa accounting dot1x default start-stop group ISE-RADIUS-SERVERS ! Konfiguruje księgowanie dla 802.1X, wysyłając zarówno rozpoczęcie, jak i zakończenie sesji
+
+aaa server radius dynamic-author
+ client 192.168.74.110 server-key Cisco123                ! Pozwala serwerowi RADIUS 192.168.74.110 na dynamiczne autoryzowanie użytkowników
+ client 192.168.74.111 server-key Cisco123                ! Pozwala serwerowi RADIUS 192.168.74.111 na dynamiczne autoryzowanie użytkowników
+
+dot1x system-auth-control                               ! Włącza uwierzytelnianie 802.1X na przełączniku
+dot1x critical eapol                                   ! Pozwala na przetwarzanie pakietów EAPOL w trybie krytycznym (np. gdy serwer RADIUS jest niedostępny)
+
+ip access-list extended PREAUTH
+ permit udp any eq bootpc any eq bootps                ! Zezwala na ruch DHCP (klient -> serwer) przed uwierzytelnieniem
+ permit udp any any eq domain                          ! Zezwala na ruch DNS przed uwierzytelnieniem
+ permit icmp any any                                   ! Zezwala na ruch ICMP (np. ping) przed uwierzytelnieniem
+ deny   ip any any log                                 ! Blokuje cały inny ruch i zapisuje próbę dostępu do logów
+
+ip device tracking probe delay 10                      ! Ustawia opóźnienie 10 sekund dla sondowania śledzenia urządzeń
+mab request format attribute 32 vlan access-vlan       ! Określa format żądania MAB z atrybutem VLAN
+
+radius-server attribute 6 on-for-login-auth            ! Włącza obsługę atrybutu 6 (Service-Type) podczas uwierzytelniania logowania
+radius-server attribute 6 support-multiple             ! Zezwala na wiele wartości dla atrybutu 6
+radius-server attribute 8 include-in-access-req        ! Dołącza atrybut 8 (Framed-IP-Address) do żądania dostępu
+radius-server attribute 25 access-request include      ! Dołącza atrybut 25 (Class) do żądania dostępu
+radius-server attribute 31 mac format ietf upper-case  ! Konfiguruje format adresu MAC na IETF (wielkie litery)
+radius-server attribute 31 send nas-port-detail        ! Wysyła szczegóły dotyczące portu NAS jako część atrybutu 31
+radius-server dead-criteria tries 2                    ! Uznaje serwer RADIUS za niedostępny po dwóch nieudanych próbach
+radius-server key Cisco123                             ! Ustawia globalny klucz współdzielony dla wszystkich serwerów RADIUS
+radius-server vsa send authentication                 ! Pozwala na wysłanie dowolnego zdefiniowanego atrybutu specyficznego dla dostawcy (VSA) do ISE podczas żądań uwierzytelniania
+radius-server vsa send accounting                     ! Pozwala wysyłać atrybuty VSA podczas księgowania
+
+
+!
+!
+!
+!Interface Configuration
+!
+int g1/1
+ switchport mode access
+ authentication event fail action next-method          ! Umożliwia przeniesienie portu do MAB po niepowodzeniu uwierzytelniania 802.1x
+ authentication event server dead action authorize vlan 100 ! Jeśli serwer RADIUS jest niedostępny, przypisuje VLAN 100 (sieć gościnna)
+ authentication event server dead action authorize voice ! Jeśli serwer RADIUS jest niedostępny, pozwala na ruch VoIP
+ authentication event server alive action reinitialize ! Po przywróceniu serwera RADIUS przełącza klientów do pełnego uwierzytelniania
+ authentication host-mode multi-domain                 ! Umożliwia uwierzytelnianie wielu urządzeń na jednym porcie (np. telefon IP i komputer)
+! Tryby dla powyższego polecenia:
+! * Multi-domain: Port zezwoli na jednego hosta z domeny głosowej i jednego hosta z domeny danych. Jest to typowa konfiguracja na portach przełączników z podłączonymi telefonami IP.
+! * Multi-auth: umożliwia niezależne uwierzytelnianie wielu urządzeń przez ten sam port. W zależności od sukcesu uwierzytelniania, na porcie będzie dozwolone jedno urządzenie głosowe i nieograniczona liczba urządzeń danych. 
+! To polecenie będzie przydatne np. podczas podłączania urządzenia koncentratora do portu przełącznika 802.1x. Należy pamiętać, że użycie koncentratora nie jest najlepszą praktyką.
+! * Multi-host: Pierwsze uwierzytelniane urządzenie otworzy port przełącznika, aby wszystkie inne urządzenia mogły korzystać z portu przełącznika bez uwierzytelniania.
+! * Single-host: Port przełącznika zezwoli na uwierzytelnianie i przekazywanie ruchu tylko jednemu hostowi.
+
+ authentication order mab dot1x                        ! Najpierw próbuje uwierzytelniania MAB, potem 802.1X
+ authentication priority dot1x mab                     ! Priorytetyzuje 802.1X nad MAB, jeśli oba są dostępne
+ authentication port-control auto                      ! Port działa w trybie automatycznym (wymaga uwierzytelnienia przed dostępem)
+ authentication periodic                               ! Włącza cykliczne uwierzytelnianie klientów
+ authentication timer reauthenticate server           ! Pobiera czas ponownego uwierzytelniania z serwera RADIUS
+ authentication violation restrict                     ! Blokuje ruch nieautoryzowanych urządzeń
+ mab                                                  ! Włącza uwierzytelnianie MAB (MAC Authentication Bypass)
+ dot1x pae authenticator                              ! Port działa jako authenticator w protokole 802.1X
+ dot1x timeout tx-period 3                            ! Ustawia okres retransmisji EAPOL na 3 sekundy
+
