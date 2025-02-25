@@ -49,7 +49,7 @@ radius-server vsa send accounting
 !
 !Interface Configuration
 !
-int g3/3
+int g1/1
  switchport mode access
  authentication event fail action next-method
  authentication event server dead action authorize vlan 100
